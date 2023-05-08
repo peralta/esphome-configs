@@ -23,6 +23,8 @@ esphome:
             - logger.log: "First boot, showing boot screen"
             - display.page.show: boot
             - script.execute: update_screen
+      - lambda: |-
+          esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B|WIFI_PROTOCOL_11G);
       - wait_until: api.connected
       # Wait a bit longer so all the items are received
       - delay: 5s
@@ -446,7 +448,7 @@ display:
             {"cloudy", "\U0000f15b"},
             {"partlycloudy", "\U0000f172"},
             {"sunny", "\U0000e81a"},
-            {"foggy", "\U0000e818"},
+            {"fog", "\U0000e818"},
             {"snowy", "\U0000e2cd"},
           };
           it.start_clipping(0, 0, 959, 539);
