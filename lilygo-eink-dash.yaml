@@ -1,0 +1,550 @@
+substitutions:
+  devicename: lilygo_t5
+  run_time: 60s
+  weather_entity_id: weather.hafnerstrasse
+  cocina_temp_id: sensor.ruuvitag_rawv2_tempc_2
+  dormitorio_temp_id: sensor.ruuvitag_rawv2_tempc_4
+
+esphome:
+  name: "lilygo-eink-dash"
+  # put board file in config/.esphome/build/lilygo-eink-dash/boards/
+  # board file at https://github.com/Xinyuan-LilyGO/LilyGo-EPD47/blob/master/platformio/boards/lilygo-t5-47.json
+  platformio_options:
+    board_dir: boards
+    board: lilygo-t5-47
+
+  on_boot:
+    priority: 200
+    then: 
+      - if:
+          condition:
+            lambda: 'return esp_sleep_get_wakeup_cause() != 4;'
+          then:
+            - logger.log: "First boot, showing boot screen"
+            - display.page.show: boot
+            - script.execute: update_screen
+      - wait_until: api.connected
+      # Wait a bit longer so all the items are received
+      - delay: 5s
+      - logger.log: "Initial sensor data received: Refreshing display..."
+      - lambda: 'id(initial_data_received) = true; ESP_LOGI("XXXX", "cause: %d", esp_sleep_get_wakeup_cause());'
+      - logger.log: "Moving to home page..."
+      - display.page.show: home
+      - script.execute: update_screen
+      - script.execute: deep_sleep_evaluation
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+  level: VERBOSE
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_encryption_key #"m/JpwYMLWqj0CffmPeRuwZD7bm3S4vswcq85cebNmi8="
+
+deep_sleep:
+  run_duration: '${run_time}'
+  sleep_duration: 30min # does not matter as we set it up later in time component
+  id: deep_sleep_1
+  esp32_ext1_wakeup:
+    pins: GPIO39 # button one
+    mode: ALL_LOW
+
+
+ota:
+  password: ""
+  on_begin:
+    - deep_sleep.prevent: deep_sleep_1
+    - display.page.show: ota_page 
+    - component.update: t5_display 
+  on_end:
+    - deep_sleep.allow: deep_sleep_1
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  manual_ip:
+    static_ip: 192.168.1.19
+    gateway: 192.168.1.1
+    subnet: 255.255.255.0
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Lilygo-Eink-Test"
+    password: "VCIKaf3ZeuAO"
+
+# Global variables for detecting if the display needs to be refreshed. (Thanks @paviro!)
+globals:
+  - id: data_updated
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: initial_data_received
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: recorded_display_refresh
+    type: int
+    restore_value: yes
+    initial_value: '0'
+
+
+script:
+  - id: update_screen
+    then:
+      - logger.log: "Updating display..."
+      - lambda: 'id(data_updated) = false;'
+      - component.update: t5_display
+      - delay: 1s
+      - lambda: 'id(recorded_display_refresh) += 1;'
+      - lambda: 'id(display_last_update).publish_state(id(homeassistant_time).now().timestamp);'
+
+  - id: deep_sleep_evaluation
+    mode: queued
+    then:
+      - if:
+          condition:
+            binary_sensor.is_on: '${devicename}_prevent_deep_sleep'
+          then:
+            - logger.log: 'Deep Sleep Disabled'
+            - deep_sleep.prevent: deep_sleep_1
+
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+    timezone: Europe/Madrid
+    on_time_sync:
+      then:
+        - logger.log: "Synchronized system clock"
+        - lambda: |-
+            // wake up at the next hour
+            int pending_minutes = 60 - id(homeassistant_time).now().minute;
+            int pending_seconds = 60 - id(homeassistant_time).now().second;
+            ESP_LOGI("deep sleep", "pending mins %d pending secs %d", pending_minutes, pending_seconds);
+            id(deep_sleep_1).set_sleep_duration((pending_minutes * 60 + pending_seconds) * 1000);
+
+
+button:
+  - platform: restart
+    name: "${devicename} restart"
+
+  - platform: template
+    name: '${devicename} Refresh'
+    icon: 'mdi:update'
+    on_press:
+      then:
+       - script.execute: update_screen
+    internal: false
+
+  - platform: template
+    name: '${devicename} Sleep'
+    icon: 'mdi:sleep'
+    on_press:
+      then:
+       - script.execute: deep_sleep_evaluation
+       - deep_sleep.enter:
+          id: deep_sleep_1
+    internal: false
+
+
+sensor:
+  - platform: template
+    name: "${devicename} Display Last Update"
+    device_class: timestamp
+    entity_category: "diagnostic"
+    id: display_last_update
+    
+  - platform: template
+    name: "${devicename} Recorded Display Refresh"
+    accuracy_decimals: 0
+    unit_of_measurement: "Refreshes"
+    state_class: "total_increasing"
+    entity_category: "diagnostic"
+    lambda: 'return id(recorded_display_refresh);'
+
+  - platform: homeassistant
+    id: pvpc_now
+    entity_id: sensor.pvpc
+
+  - platform: homeassistant
+    id: temp_now_outside
+    entity_id: ${weather_entity_id}
+    attribute: temperature
+
+  - platform: homeassistant
+    id: temp_now_cocina
+    entity_id: ${cocina_temp_id}
+
+  - platform: homeassistant
+    id: temp_now_dormitorio
+    entity_id: ${dormitorio_temp_id}
+
+  - platform: wifi_signal
+    name: 'WiFi Signal'
+    id: 'wifi_Signal'
+    update_interval: 60s
+
+  - id: 'battery_voltage'
+    name: 'Battery Voltage'
+    platform: lilygo_t5_47
+    unit_of_measurement: V
+    state_class: measurement
+    device_class: voltage
+    update_interval: 60s
+
+text_sensor:
+  - platform: homeassistant
+    name: "pvpc"
+    entity_id: sensor.pvpc_json_sensor
+    id: pvpc
+
+  - platform: homeassistant
+    name: "pvpc"
+    entity_id: sensor.pvpc_json_sensor
+    attribute: json_str
+    id: pvpc_attr
+
+  - platform: homeassistant
+    id: pvpc_next_best_at
+    entity_id: sensor.pvpc
+    attribute: next_best_at
+    filters:
+      - lambda: |-
+          return x.substr(1,2);
+
+  - platform: homeassistant
+    name: "forecast"
+    entity_id: ${weather_entity_id}
+    id: weather_forecast
+    attribute: forecast
+
+  - platform: homeassistant
+    name: "weather condition today"
+    entity_id: ${weather_entity_id}
+    id: weather_condition_now
+
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_big
+    size: 100
+  - file: "gfonts://Roboto"
+    id: font_med
+    size: 50
+    glyphs: "!/%()+=,-_.:°0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz€"
+  - file: "gfonts://Roboto+Mono"
+    id: font_med_mono
+    size: 50
+    glyphs: "!/%()+=,-_.:°0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz€"
+  - file: "gfonts://Roboto"
+    id: font_tiny
+    glyphs: "|!/%()+=,-_.:°0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz€"
+    size: 24
+  - file: "gfonts://Roboto+Mono"
+    id: font_tiny_mono
+    size: 24
+    glyphs: "|!/%()+=,-_.:º0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz€"
+  - file: 'gfonts://Material+Symbols+Outlined'
+    id: icon_font_50
+    size: 50
+    #https://fonts.google.com/icons?selected=Material+Symbols+Outlined:system_update:FILL@0;wght@400;GRAD@0;opsz@48&icon.style=Outlined
+    glyphs: 
+      - "\U0000e425" # mdi-timer
+      - "\U0000e62a" # mdi-system_update
+      - "\U0000e1ff" # mdi-device_thermostat
+      - "\U0000ea0b" # mdi-bolt
+  - file: 'gfonts://Material+Symbols+Outlined'
+    id: icon_font_24
+    size: 24
+    #https://fonts.google.com/icons?selected=Material+Symbols+Outlined:system_update:FILL@0;wght@400;GRAD@0;opsz@48&icon.style=Outlined
+    glyphs: 
+      - "\U0000f063" # mdi-signal_wifi_bad
+      - "\U0000ebe4" # mdi-network_wifi_1_bar
+      - "\U0000ebd6" # mdi-network_wifi_2_bar
+      - "\U0000ebe1" # mdi-network_wifi_3_bar
+      - "\U0000e1d8" # mdi-network_wifi_4_bar
+      - "\U0000ebd9" # mdi-battery_1_bar
+      - "\U0000ebe0" # mdi-battery_2_bar
+      - "\U0000ebdd" # mdi-battery_3_bar
+      - "\U0000ebe2" # mdi-battery_4_bar
+      - "\U0000ebd4" # mdi-battery_5_bar
+      - "\U0000ebd2" # mdi-battery_6_bar
+      - "\U0000f19d" # mdi-battery_charging_station
+  - file: 'gfonts://Material+Symbols+Outlined'
+    id: icon_font_100
+    size: 100
+    #https://fonts.google.com/icons?selected=Material+Symbols+Outlined:system_update:FILL@0;wght@400;GRAD@0;opsz@48&icon.style=Outlined
+    glyphs: 
+      - "\U0000f15b" # mdi-cloudy
+      - "\U0000f176" # {"rainy", "\U0000f176"},
+      - "\U0000ebdb" # {"lightning", "\U0000ebdb"},
+      - "\U0000f172" # {"partlycloudy", "\U0000f172"},
+      - "\U0000e81a" # {"sunny", "\U0000e81a"},
+      - "\U0000e818" # {"fog", "\U0000e818"},
+      - "\U0000e2cd" # {"snowy", "\U0000e2cd"},
+
+
+external_components:
+  - source: github://ashald/esphome@lilygo-t5-47
+    components:
+      - lilygo_t5_47
+
+  - source: /local-components
+
+
+binary_sensor:
+  - platform: gpio
+    pin: 
+      number: GPIO39
+      inverted: true
+    name: "${devicename} Button 1"
+    on_press:
+      then:
+        - logger.log: "Preventing deep sleep"
+        - deep_sleep.prevent: deep_sleep_1
+
+  - platform: gpio
+    pin: 
+      number: GPIO34
+      inverted: true
+    name: "${devicename} Button 2"
+    on_press:
+      then:
+       - display.page.show_next: t5_display
+       - script.execute: update_screen
+
+  - platform: gpio
+    pin: 
+      number: GPIO35
+      inverted: true
+    name: "${devicename} Button 3"
+
+  - platform: homeassistant
+    id: '${devicename}_prevent_deep_sleep'
+    name: '${devicename} Prevent Deep Sleep'
+    entity_id: 'input_boolean.${devicename}_prevent_deep_sleep'
+
+
+# requires https://github.com/peralta/esphome/tree/json_graph
+json_graph:
+  - id: pvpcgraph
+    #sensor: pvpc
+    duration: 24h
+    x_grid: 2h
+    width: 500
+    height: 300
+    min_value: 0.0
+    max_value: 0.6
+    min_range: 0.01
+    max_range: 0.4
+    traces:
+      - sensor: pvpc_attr
+      #- sensor: pvpc
+        line_type: SOLID
+        line_thickness: 8
+
+# dumb graph required in order to use json_graph
+graph:
+  - id: dumb_graph
+    height: 10
+    width: 10
+    duration: 10h
+
+display:
+  - platform: lilygo_t5_47
+    id: t5_display
+    rotation: 0
+    update_interval: never
+    cycles_render: 40
+    cycles_invert: 40
+    full_update_every: 1
+    # 960 x 540
+    pages:
+      - id: home
+        lambda: |-
+          int graph_width = 500;
+          int graph_height = 300;
+          int graph_lpad = 35;
+          int graph_rpad = 40;
+          int graph_tpad = 20;
+
+          it.graph(graph_lpad, graph_tpad, id(pvpcgraph));
+          // legend x
+          it.printf(graph_lpad - 10, graph_tpad + graph_height, id(font_tiny), "00      03      06      09      12      15      18      21      24");
+          // legend y
+          it.printf(0, 5, id(font_tiny), "0.6");
+          it.printf(0, 155, id(font_tiny), "0.3");
+    
+          int hour = id(homeassistant_time).now().hour;
+          int line_pos = hour * graph_width / 24 + graph_lpad;
+
+          // draw a vertical shade around the current hour, by calculating the vertical lines in an hour and
+          // filling 5 of them
+          int hour_lines = graph_width / 24;
+          int delta = hour_lines / 5;
+          for (int i=0; i < 5; i++) {
+            it.line(line_pos + (delta * i), graph_tpad, line_pos + (delta * i), graph_height + graph_tpad);
+          }
+
+          int graph_x_end = graph_width + graph_rpad;
+          int graph_y_end = graph_height + 40;
+          int card_x_size = 210;
+
+          // pvpc data
+          int pvpc_y_labels = 100;
+          int pvpc_x_start = graph_x_end + graph_rpad;
+
+          // bolt
+          it.printf(graph_x_end, 50, id(icon_font_50), "\U0000ea0b");
+
+          it.printf(pvpc_x_start, 0, id(font_big), "%.2f", id(pvpc_now).state);
+          it.printf(pvpc_x_start, pvpc_y_labels, id(font_med), " € / KWh");
+
+          // best next at
+          it.printf(pvpc_x_start + card_x_size, 0, id(font_big), "%sh", id(pvpc_next_best_at).state.c_str());
+
+          it.printf(pvpc_x_start + card_x_size, pvpc_y_labels, id(icon_font_50), "\U0000e425");
+          it.printf(pvpc_x_start + card_x_size + 45, pvpc_y_labels, id(font_med), " Ideal");
+
+          // thermometer
+          it.printf(graph_x_end, 225, id(icon_font_50), "\U0000e1ff");
+
+          //
+          int temp_x_start = graph_x_end + graph_rpad;
+          //it.rectangle(temp_x_start, 175, 540, graph_tpad + graph_height);
+
+          it.printf(temp_x_start, 175, id(font_med), "Cocina:");
+          it.printf(temp_x_start, 225, id(font_med), "Principal:");
+          it.printf(temp_x_start, 275, id(font_med), "Fuera:");
+
+          int temp_value_x_start = temp_x_start + 250;
+          //it.rectangle(temp_value_x_start, 175, 540, (graph_tpad + graph_height) / 2);
+
+          it.printf(temp_value_x_start, 175, id(font_med_mono), "%4.1f", id(temp_now_cocina).state);
+          it.printf(temp_value_x_start, 225, id(font_med_mono), "%4.1f", id(temp_now_dormitorio).state);
+          it.printf(temp_value_x_start, 275, id(font_med_mono), "%4.1f", id(temp_now_outside).state);
+
+          // weather forecast
+          int weather_x = 0;
+          int weather_y = graph_y_end;
+          int weather_day_y = graph_y_end + 115;
+          int weather_temp_y = weather_day_y + 25;
+          int weather_card_y_size = 515 - graph_y_end - 10;
+          int weather_card_x_size = 160;
+
+          const char *days_of_week[] = {"Dom", "Lun", "Mar", "Mie", "Jue", "Vie", "Sab"};
+          int day_of_week = id(homeassistant_time).now().day_of_week - 1; // Sunday is 1
+
+          std::map<std::string, std::string> weather_icon_map = {
+            {"rainy", "\U0000f176"},
+            {"lightning", "\U0000ebdb"},
+            {"cloudy", "\U0000f15b"},
+            {"partlycloudy", "\U0000f172"},
+            {"sunny", "\U0000e81a"},
+            {"foggy", "\U0000e818"},
+            {"snowy", "\U0000e2cd"},
+          };
+          it.start_clipping(0, 0, 959, 539);
+          if (id(weather_forecast).has_state()) {
+            DynamicJsonDocument doc(2048);
+            deserializeJson(doc, (id(weather_forecast).state.c_str()));
+            JsonArray root = doc.as<JsonArray>();
+            for (int i=0; i<5; i++) {
+              int card_x = 185 * i;
+              JsonObject day_object = root[i];
+              std::string datetime = day_object["datetime"];
+              std::string condition = day_object["condition"];
+              float temp_max = day_object["temperature"].as<float>();
+              float temp_min = day_object["templow"].as<float>();
+              if (i == 0) {
+                // we can replace today's icon forecast by the actual condition provided by the sensor
+                condition = id(weather_condition_now).state;
+              }
+              std::string condition_icon = "";
+              if (weather_icon_map.count(condition.c_str())) {
+                condition_icon = weather_icon_map[condition.c_str()];
+              } else {
+                ESP_LOGI("display", "condition %s does not have a glyph", condition.c_str());
+              }
+              it.printf(20 + card_x + (weather_card_x_size / 6), weather_y, id(icon_font_100), condition_icon.c_str());
+              it.printf(20 + card_x + (weather_card_x_size / 3), weather_day_y, id(font_tiny), "%s", days_of_week[(day_of_week + i) % 7]);
+              it.printf(20 + card_x + (weather_card_x_size / 12), weather_temp_y, id(font_tiny_mono), "%4.1f|%4.1fº", temp_min, temp_max);
+
+              //it.rectangle(20 + card_x, weather_y, weather_card_x_size, weather_card_y_size);
+
+            }
+          it.end_clipping();
+
+          }
+
+
+          // footer
+          int footer_y = 512;
+          it.strftime(0, footer_y, id(font_tiny), "%Y-%m-%d %H:%M", id(homeassistant_time).now());
+
+          // wifi signal
+          int wifi_y_a = footer_y;
+          int wifi_x_a = 925;
+          if (id(wifi_Signal).has_state()) {
+            if (id(wifi_Signal).state >= -50) {
+              //Excellent
+              it.print(wifi_x_a, wifi_y_a, id(icon_font_24), TextAlign::TOP_RIGHT, "\U0000e1d8");
+            } else if (id(wifi_Signal).state >= -60) {
+              //Good
+              it.print(wifi_x_a, wifi_y_a, id(icon_font_24), TextAlign::TOP_RIGHT, "\U0000ebe1");
+            } else if (id(wifi_Signal).state >= -67) {
+              //Fair
+              it.print(wifi_x_a, wifi_y_a, id(icon_font_24), TextAlign::TOP_RIGHT, "\U0000ebd6");
+            } else if (id(wifi_Signal).state >= -70) {
+              //Weak
+              it.print(wifi_x_a, wifi_y_a, id(icon_font_24), TextAlign::TOP_RIGHT, "\U0000ebe4");
+            } else {
+              //Unlikely working signal
+              it.print(wifi_x_a, wifi_y_a, id(icon_font_24), TextAlign::TOP_RIGHT, "\U0000f063");
+            }
+          }
+
+          // Battery Voltage
+          int battery_voltage_x = 955;
+          int battery_voltage_y = footer_y;
+
+          if (id(battery_voltage).has_state()) {
+            if (id(battery_voltage).state >= 4.5) {
+              it.print(battery_voltage_x, battery_voltage_y, id(icon_font_24), TextAlign::TOP_RIGHT, "\U0000f19d");
+            } else if (id(battery_voltage).state >= 3.7) {
+              it.print(battery_voltage_x, battery_voltage_y, id(icon_font_24), TextAlign::TOP_RIGHT, "\U0000ebd2");
+            } else if (id(battery_voltage).state >= 3.5) {
+              it.print(battery_voltage_x, battery_voltage_y, id(icon_font_24), TextAlign::TOP_RIGHT, "\U0000ebd4");
+            } else if (id(battery_voltage).state >= 3.3) {
+              it.print(battery_voltage_x, battery_voltage_y, id(icon_font_24), TextAlign::TOP_RIGHT, "\U0000ebe2");
+            } else if (id(battery_voltage).state >= 3.1) {
+              it.print(battery_voltage_x, battery_voltage_y, id(icon_font_24), TextAlign::TOP_RIGHT, "\U0000ebdd");
+            } else if (id(battery_voltage).state >= 3.0) {
+              it.print(battery_voltage_x, battery_voltage_y, id(icon_font_24), TextAlign::TOP_RIGHT, "\U0000ebe0");
+            } else {
+              it.print(battery_voltage_x, battery_voltage_y, id(icon_font_24), TextAlign::TOP_RIGHT, "\U0000ebd9");
+            }
+          }
+
+      - id: boot
+        lambda: |-
+          int mid_x = 460;
+          int mid_y = 250;
+          it.printf(mid_x, mid_y, id(icon_font_50), "\U0000e425");
+      - id: blank
+        lambda: |-
+      - id: ota_page
+        lambda: |-
+          int mid_x = 460;
+          int mid_y = 250;
+          it.printf(mid_x, mid_y, id(icon_font_50), "\U0000e62a");
+
+
+
+captive_portal:
+    
