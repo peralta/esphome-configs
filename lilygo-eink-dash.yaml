@@ -45,7 +45,7 @@ logger:
 # Enable Home Assistant API
 api:
   encryption:
-    key: !secret api_encryption_key #"m/JpwYMLWqj0CffmPeRuwZD7bm3S4vswcq85cebNmi8="
+    key: !secret api_encryption_key
 
 deep_sleep:
   run_duration: '${run_time}'
