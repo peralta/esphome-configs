@@ -296,6 +296,11 @@ external_components:
     components:
       - lilygo_t5_47
 
+  - source: github://peralta/esphome@json_graph
+    components:
+      - json_graph
+      - display
+
   - source: /local-components
 
 
