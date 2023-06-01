@@ -1,9 +1,9 @@
 substitutions:
   devicename: lilygo_t5
   run_time: 60s
-  weather_entity_id: weather.hafnerstrasse
+  weather_entity_id: weather.gaeta
   cocina_temp_id: sensor.ruuvitag_rawv2_tempc_2
-  dormitorio_temp_id: sensor.ruuvitag_rawv2_tempc_4
+  dormitorio_temp_id: sensor.ruuvitag_rawv2_tempc
 
 esphome:
   name: "lilygo-eink-dash"
@@ -71,10 +71,10 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
-  manual_ip:
-    static_ip: 192.168.1.19
-    gateway: 192.168.1.1
-    subnet: 255.255.255.0
+    #  manual_ip:
+    #static_ip: 192.168.1.19
+    #gateway: 192.168.1.1
+    #subnet: 255.255.255.0
   # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
     ssid: "Lilygo-Eink-Test"
