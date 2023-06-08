@@ -104,7 +104,10 @@ script:
       - component.update: t5_display
       - delay: 1s
       - lambda: 'id(recorded_display_refresh) += 1;'
-      - lambda: 'id(display_last_update).publish_state(id(homeassistant_time).now().timestamp);'
+      - lambda: |-
+          if (id(homeassistant_time).now().is_valid()) {
+            id(display_last_update).publish_state(id(homeassistant_time).now().timestamp);
+          }
 
   - id: deep_sleep_evaluation
     mode: queued
